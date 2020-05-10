@@ -1,0 +1,368 @@
+---
+---
+title: "Wine Reviews"
+author: "Luis Noguera"
+date: "5/9/2020"
+output: 
+  html_document: 
+    code_folding: hide
+---
+
+# Analyzing Wine Reviews
+
+
+Vivino is the largest wine marketplace in the world, it holds the world's biggest wine database thanks to a wonderful team and it's more than 40 million users, making over 1.1 billion scans. I have always liked to drink wine and working for Vivino inspired me to learn about wines even more, for this small learning project, I decided to take the sober approach using data analysis instead of tasting more than 100,000 wines comprised in this dataset. 
+
+This dataset is part of the amazing TidyTuesday R project, where a new data set is shared every week for the R community or just anyone interested in data analysis to explore and/or model, find the dataset [here](https://github.com/rfordatascience/tidytuesday/tree/master/data/2019/2019-05-28). This is **NOT** data captured or stored by Vivino. 
+
+
+
+## Initial Set Up
+
+```{r warning=FALSE, echo=TRUE, eval= TRUE, message=FALSE}
+
+knitr::opts_chunk$set(cache = TRUE, 
+                      warning = FALSE,
+                      message = FALSE,
+                      dpi = 180, 
+                      fig.width = 8,
+                      fig.height = 5
+)
+
+
+# Importing libraries and set up the work environment
+library(knitr)
+library(readxl)
+library(tidyverse)
+library(tidymodels)
+library(vip)
+library(doParallel)
+library(tidymodels)
+library(ggplot2)
+library(skimr)
+
+theme_set(theme_classic())
+
+
+```
+
+## Data Import
+
+```{r}
+
+
+wine_ratings <- readr::read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2019/2019-05-28/winemag-data-130k-v2.csv") 
+
+# Some Cleaning Process
+wine_ratings <- wine_ratings %>% 
+  extract(title, "year", "(20\\d\\d)", convert = TRUE, remove = FALSE) %>%
+  mutate(year = ifelse(year < 1900, NA, year)) %>%
+  filter(!is.na(price)) %>%
+  select(-X1)  %>%
+  mutate(review_id = row_number())
+
+```
+
+
+## Data Exploration
+
+
+Let's Explore how many many people reviewed these wines.
+
+
+## Some Visualizations
+
+```{r}
+
+wine_ratings %>%
+  ggplot(aes(price)) +
+  geom_histogram(fill = 'dark red', alpha = 0.7) +
+  scale_x_log10() +
+  labs(title = 'Distribution of wine prices in the data set',
+       x = 'Log of the Price',
+       y = 'Number of Wines')
+
+
+wine_ratings %>%
+  ggplot(aes(points)) +
+  geom_histogram(bindwidth = 1, fill = 'navy blue', alpha = 0.7) +
+  labs(title = 'Distribution of Scores by the Reviewer',
+       x = 'Points by Reviewer',
+       y = 'Number of Wines')
+
+```
+
+# Fiting and visualizing a linear model
+
+Let's see the relationship between price and the score given by the reviewer.
+
+
+```{r}
+
+wine_ratings %>%
+  ggplot(aes(price, points)) +
+  geom_smooth(method = 'lm', colour = 'black') +
+  geom_point(colour = 'dark red', alpha = 0.2) +
+  scale_x_log10() +
+  labs(x = 'Price of Wine',
+       y = 'Points by Reviewer')
+
+lm(points ~ log2(price), data = wine_ratings) %>% summary()
+
+
+```
+
+Interesting! Every time the wine doublew in price it is expected an increase 2 point score increase 
+
+Let's see how different region producers affect the score given by the reviewer.
+
+
+```{r}
+
+wine_ratings %>%
+  mutate(country = fct_lump(country, 7)) %>%
+  ggplot(aes(price, points, colour = country)) +
+  geom_point(alpha = .5) +
+  geom_smooth(method = 'lm', colour = 'black') +
+  scale_x_log10() +
+  labs(x = 'Price of Wine',
+       y = 'Points by Reviewer')
+  
+```
+
+
+So, it seems that expensive French wines are the ones with the highest score. Let's fit another linear model to understand the impact of the country in the wine score. 
+
+
+Let's compare how the top 10 countries represented in the dataset compare to France, which it seems to be the best rated country,
+
+```{r}
+
+wine_ratings %>%
+  mutate(country = fct_relevel(fct_lump(country, 10), "France")) %>% 
+  lm(points ~ log2(price) + country, data = .) %>% summary()
+
+```
+
+
+Austrian, Australian, German and Postuguese wines seem to be among the countries that scored higher than French wines. 
+
+Visualizing this relationship between points and countries
+
+```{r}
+
+wine_ratings %>%
+  mutate(country = fct_relevel(fct_lump(country, 10), "France")) %>%
+  mutate(country = fct_reorder(country, points)) %>%
+  filter(!is.na(country)) %>%
+  ggplot(aes(country, points)) +
+  geom_boxplot() +
+  coord_flip()
+
+
+```
+
+
+Not controlling for price, South American wines, Chilean and Argentinians are the worst rated by reviewers. 
+
+
+Now that we have learned  a few things about wines in his dataset, let's plot variables that make the most impact in the score of a wine scored by the reviewers. 
+
+
+
+```{r}
+library(stringr)
+lin_reg_model <- wine_ratings %>%
+  replace_na(list(taster_name = 'Missing', country = 'Missing', province = 'Missing')) %>%
+  mutate(country = fct_relevel(fct_lump(country, 10), "France"),
+         taster_name = fct_relevel(fct_lump(taster_name, 5), "Missing"),
+         province = fct_relevel(fct_lump(province, 10), 'Missing')) %>%
+  lm(points ~ taster_name + log2(price) + province + country, data = .) 
+
+
+lin_reg_model %>%
+  tidy(conf.int = T) %>%
+  filter(term != '(Intercept)') %>%
+  mutate(term = str_replace(term, 'taster_name', 'Reviewer: '),
+         term = str_replace(term, 'province', 'Province: '),
+         term = str_replace(term, 'country', 'Country: '),
+         term = fct_reorder(term, estimate)) %>%
+  ggplot(aes(term, estimate)) +
+  geom_point() +
+  coord_flip() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) 
+  
+  
+```
+
+This graphs represent the varibles that have a high impact on the wine score. Californian, Washinton, Oregon and Price on the top. The bars in this case represent how certain we can be about the coefficient estimates in this linear model. 
+
+# Find how to calculate the MSE -  Simple stuf, come one!
+
+```{r}
+
+lin_mod_pred <- lin_reg_model %>% 
+  augment(data = wine_ratings) %>% 
+  select(.fitted, points) %>%
+  rename('y_pred' = .fitted, 'y_true'= points)
+
+
+```
+
+## Text Mining 
+
+Much of the data about these wines is actually in the review given by the taster. Let's explore and see how well we can estimate the score of a wine mixing the text and other variables. 
+
+## To be comleted.......
+
+- Created sparse dataframe with words and other variables. 
+
+```{r}
+library(tidytext)
+library(textrecipes)
+
+
+wine_ratings %>% 
+  unnest_tokens(word, description) %>%
+  anti_join(stop_words) %>%
+  filter(!word %in% c("wine", "drink"),
+         str_detect(word, "[a-z]")) %>%
+  mutate(country = fct_lump(country, 10),
+         taster_name = fct_lump(taster_name, 20),
+         province = fct_lump(province, 40)) -> reviews_tokens
+
+
+# Even after dropping all the NA columns I still have more than 92k reviews to analyze. Let's move forward
+
+reviews_tokens %>% 
+  distinct(review_id, word) %>%
+  add_count(word) %>%
+  filter(n >= 500) -> reviews_tokens
+
+
+# Create a Document-Term-Matrix
+
+reviews_tokens %>%
+  count(word, review_id, sort = T) %>%
+  cast_dtm(review_id, word, n) %>% 
+  tidy() -> reviews_dtm
+
+vars_model <- wine_ratings %>%
+   select(country, points, taster_name, year, price, review_id, province) %>%
+   mutate(log_price = log2(price)) %>%
+  select(-price) %>%
+  replace_na(list(taster_name = 'Missing'))
+
+
+  
+words_sparse <- reviews_dtm %>%
+  spread(term, count) %>% 
+  rename('review_id' = document) %>%
+  mutate(review_id = as.integer(review_id)) 
+
+
+all_features <- words_sparse %>%
+  replace(is.na(.),0) %>%
+  inner_join(vars_model, by = 'review_id') %>%
+  mutate_if(is.character, as.factor) 
+
+
+all_features_matrix <- as.matrix(all_features)
+
+```
+
+
+
+Davi Robinson's approach
+
+
+```{r}
+library(glmnet)
+glmnet_model <- glmnet(all_features_matrix, points)
+
+
+```
+
+
+
+
+## Data Split
+
+
+```{r}
+set.seed(415)
+
+all_features_split <- initial_split(all_features)
+all_features_train <- training(all_features_split)
+all_features_test <- testing(all_features_split)
+
+
+```
+
+
+## Building a Model Recipe
+
+
+
+```{r}
+
+all_features_rec <- recipe(points ~ ., data = all_features_train) %>%
+  update_role(review_id, new_role = 'ID') %>%
+  step_dummy(all_nominal()) %>%
+  step_normalize(all_predictors()) %>%
+  step_corr(all_numeric()) 
+  
+
+
+all_features_prep <- all_features_rec %>%
+  prep()
+
+
+```
+
+
+## Lasso Regression
+
+```{r}
+
+lasso_spc <- linear_reg(penalty = tune(), mixture = 1) %>%
+  set_engine('glmnet')
+
+lasso_wf <- workflow() %>%
+  add_model(lasso_spc) %>%
+  add_recipe(all_features_rec)
+
+```
+
+
+# Tunning Lasso Model
+
+
+
+```{r}
+
+
+lambda_grid <- grid_regular(penalty(), levels = 5)
+
+wines_folds <- bootstraps(all_features_train)
+
+set.seed(415)
+
+
+lasso_grid <- tune_grid(
+  lasso_wf,
+  resamples = wines_folds,
+  grid = lambda_grid
+)
+
+
+
+```
+
+
+
+
+
+
+
+
